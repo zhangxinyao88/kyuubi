@@ -49,7 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 2bae5750ee4722528c332a16d4d30c0e35d7e415
+          ref: 1c7124f91c716b8ed83d5ad52a315adf2196620f
           persist-credentials: false
       - name: Free up disk space
         run: ./.github/scripts/free_disk_space.sh
