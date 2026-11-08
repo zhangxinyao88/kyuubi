@@ -1,0 +1,109 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+name: Verify Kyuubi #7825 on #7840 with Spark 4.2
+
+on:
+  push:
+    branches:
+      - codex/ci-7825-on-7840
+
+permissions:
+  contents: read
+
+env:
+  MAVEN_ARGS: -Dmaven.javadoc.skip=true -Drat.skip=true -Dscalastyle.skip=true -Dspotless.check.skip -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -Pjdbc-shaded,gen-policy -Pflink-provided,hive-provided,spark-provided
+  KUBERNETES_VERSION: v1.30.0
+  MINIKUBE_VERSION: v1.33.1
+
+jobs:
+  default:
+    name: Kyuubi and Spark Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      matrix:
+        include:
+          - java: 25
+            python: '3.11'
+            spark: '4.2'
+            spark-archive: '-Pscala-2.13'
+            exclude-tags: '-Dmaven.plugin.scalatest.exclude.tags=org.scalatest.tags.Slow,org.apache.kyuubi.tags.DeltaTest,org.apache.kyuubi.tags.IcebergTest,org.apache.kyuubi.tags.PaimonTest,org.apache.kyuubi.tags.HudiTest'
+            comment: 'normal'
+    env:
+      SPARK_LOCAL_IP: localhost
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 6c59a2009dba2122217d03b3323f47db7eabdcd1
+          persist-credentials: false
+      - name: Free up disk space
+        run: ./.github/scripts/free_disk_space.sh
+      - name: Tune Runner VM
+        uses: ./.github/actions/tune-runner-vm
+      - name: Setup JDK ${{ matrix.java }}
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: 'maven'
+      - name: Setup Maven
+        uses: ./.github/actions/setup-maven
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Resolve engine archive download URLs
+        id: engine-archives
+        run: ./.github/scripts/resolve-engine-archive-urls.sh spark,hive,flink -Pspark-${{ matrix.spark }} ${{ matrix.spark-archive }}
+      - name: Make /opt writable for engine archives
+        run: sudo chown "$(id -un)" /opt
+      - name: Download Spark
+        uses: ./.github/actions/download-archive
+        with:
+          url: ${{ steps.engine-archives.outputs.spark-url }}
+          untar-dir: /opt
+      - name: Download Hive
+        uses: ./.github/actions/download-archive
+        with:
+          url: ${{ steps.engine-archives.outputs.hive-url }}
+          untar-dir: /opt
+      - name: Download Flink
+        uses: ./.github/actions/download-archive
+        with:
+          url: ${{ steps.engine-archives.outputs.flink-url }}
+          untar-dir: /opt
+      - name: Expose engine homes
+        run: ./.github/scripts/expose-engine-homes.sh spark,hive,flink
+      - name: Build and test Kyuubi and Spark with maven w/o linters
+        timeout-minutes: 330
+        run: |
+          if [[ "${{ matrix.java }}" == "8" && "${{ matrix.spark }}" == "3.5" && "${{ matrix.spark-archive }}" == "" ]]; then
+            export MAVEN_ARGS="${MAVEN_ARGS} -Pcodecov -Dmaven.javadoc.skip=false -Dmaven.scaladoc.skip=false"
+          fi
+          TEST_MODULES="dev/kyuubi-codecov"
+          ./build/mvn clean install -pl ${TEST_MODULES} -am \
+          -Pjava-${{ matrix.java }} -Pspark-${{ matrix.spark }} ${{ matrix.spark-archive }} ${{ matrix.exclude-tags }}
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-tests-log-java-${{ matrix.java }}-spark-${{ matrix.spark }}-${{ matrix.comment }}
+          path: |
+            **/target/unit-tests.log
+            **/kyuubi-spark-sql-engine.log*
+            **/kyuubi-spark-batch-submit.log*
